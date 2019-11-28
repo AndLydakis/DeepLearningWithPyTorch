@@ -4,7 +4,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+*.hdf5
+*.t
+*Deep-Learning-With-PyTorch.pdf
+!*resources
 # C extensions
 *.so
 
