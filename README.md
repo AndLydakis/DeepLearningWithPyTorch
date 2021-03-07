@@ -15,4 +15,6 @@
     * [Gradient Descent](./Chapter_5_the_mechanics_of_learning/gradient_descent.ipynb)
     * [Autograd](./Chapter_5_the_mechanics_of_learning/autograd.ipynb)
     ![word_embedding](resources/learning.jpg)
-    <img src="resources/learning.jpg" width="240" height="200">
+* [Chager 6 - Fitting Data with NNs](./Chapter_6_using_nn_to_fit_data)
+  ![neural_network](resources/nn.jpg)
+  <img src="resources/nn.jpg" alt="alt text" height="200px">
