@@ -21,6 +21,6 @@
   * [Basic NN](./Chapter_6_using_nn_to_fit_data/basic_nn.ipynb)
 * [Chapter 7 - Is it a bird? Is it a plane?](./Chapter_7_birds_vs_planes/is_it_a_bird.ipynb)
     <img src="resources/pt_dataset.jpg" alt="pt_dataset" height="200">
-* [Chapter 8 - Using Convolutions to Generalise](./Chapter_8_using_conv_to_generalise)
+* [Chapter 8 - Using Convolutions to Generalise](./Chapter_8_using_conv_to_generalise)  
     <img src="resources/conv_kernel.jpg" alt="conv_kernel" height="200">  
     <img src="resources/conv_learning.jpg" alt="conv_learning" height="200">
