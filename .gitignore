@@ -8,6 +8,7 @@ __pycache__/
 *$py.class
 *.hdf5
 *.t
+*.gz
 *Deep-Learning-With-PyTorch.pdf
 !*resources
 # C extensions
