@@ -3,6 +3,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.idea
+*data-unversioned
 *.py[cod]
 *$py.class
 *.hdf5
