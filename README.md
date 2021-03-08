@@ -23,4 +23,7 @@
     <img src="resources/pt_dataset.jpg" alt="pt_dataset" height="200">
 * [Chapter 8 - Using Convolutions to Generalise](./Chapter_8_using_conv_to_generalise)  
     <img src="resources/conv_kernel.jpg" alt="conv_kernel" height="200">  
-    <img src="resources/conv_learning.jpg" alt="conv_learning" height="200">
+    <img src="resources/conv_learning.jpg" alt="conv_learning" height="200">  
+* [End-to-End Cancer Detector](./Chapter_9_cancer_detection)  
+  <img src="resources/end_to_end.jpg" alt="end_to_end" height="200">  
+    *[Data Loading](./Chapter_9_cancer_detection/cancer_detector/dsets.py)
