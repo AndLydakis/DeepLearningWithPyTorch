@@ -26,4 +26,7 @@
     <img src="resources/conv_learning.jpg" alt="conv_learning" height="200">  
 * [End-to-End Cancer Detector](./Chapter_9_cancer_detection)  
   <img src="resources/end_to_end.jpg" alt="end_to_end" height="200">  
-    * [Data Loading](./Chapter_9_cancer_detection/cancer_detector/dsets.py)
+    * [Data Loading](./Chapter_9_cancer_detection/data_loading.ipynb)
+    * [Detecting Suspect Nodules](./Chapter_9_cancer_detection/suspect_detector.ipynb)  
+    <img src="resources/suspect.jpg" alt="suspect" height="130">
+    
