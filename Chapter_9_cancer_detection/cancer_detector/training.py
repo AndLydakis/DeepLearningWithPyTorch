@@ -49,11 +49,11 @@ class LunaTrainingApp:
 
         self.model = self.initModel()
         self.optimizer = self.initOptimizer()
+        self.totalTrainingSamples_count = 0
 
         self.trn_writer = None
         self.val_writer = None
-        self.totalTraininSamples_count = 0
-
+        
     def main(self):
         log.info("Starting {}, {}".format(type(self).__name__, self.cli_args))
 
