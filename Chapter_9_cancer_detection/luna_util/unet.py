@@ -42,7 +42,7 @@ class UNetConvBlock(nn.Module):
         if batch_norm:
             block.append(nn.BatchNorm2d(out_size))
 
-        self.block = nn.sequential(*block)
+        self.block = nn.Sequential(*block)
 
     def forward(self, x):
         out = self.block(x)

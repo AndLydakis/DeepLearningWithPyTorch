@@ -19,18 +19,16 @@ from torch.utils.data import Dataset
 
 raw_cache = getCache('part2ch10_raw')
 
+MaskTuple = namedtuple('MaskTuple',
+                       'raw_dense_mask, dense_mask, body_mask, air_mask, raw_candidate_mask, candidate_mask, lung_mask, neg_mask, pos_mask')
 CandidateInfoTuple = namedtuple(
-    'CandidateInfoTuple', 'isNodule_bool, diameter_mm, series_uid, center_xyz'
+    'CandidateInfoTuple', 'isNodule_bool, hasAnnotation_bool, isMal_bool, diameter_mm, series_uid, center_xyz'
 )
 
 log = logging.getLogger(__name__)
 # log.setLevel(logging.WARN)
 # log.setLevel(logging.INFO)
 log.setLevel(logging.DEBUG)
-CandidateInfoTuple = namedtuple(
-    'CandidateInfoTuple',
-    'isNodule_bool, diameter_mm, series_uid, center_xyz',
-)
 
 
 @functools.lru_cache(1)

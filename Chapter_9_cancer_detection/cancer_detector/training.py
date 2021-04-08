@@ -13,9 +13,9 @@ from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader
 
 from luna_util.util import enumerateWithEstimate
-from .dsets import LunaDataset
+from .dsets import Luna2dSegmentationDataset, TrainingLuna2dSegmentationDataset, getCt
 from luna_util.logconf import logging
-from .model import LunaModel
+from .model import UNetWrapper, SegmentationAugmentation
 
 log = logging.getLogger(__name__)
 # log.setLevel(logging.WARN)
@@ -23,13 +23,19 @@ log.setLevel(logging.INFO)
 log.setLevel(logging.DEBUG)
 
 # Used for computeBatchLoss and logMetrics to index into metrics_t/metrics_a
-METRICS_LABEL_NDX = 0
-METRICS_PRED_NDX = 1
-METRICS_LOSS_NDX = 2
-METRICS_SIZE = 3
+# METRICS_LABEL_NDX = 0
+# METRICS_PRED_NDX = 1
+# METRICS_LOSS_NDX = 2
+# METRICS_SIZE = 3
+
+METRICS_LOSS_NDX = 1
+METRICS_TP_NDX = 7
+METRICS_FN_NDX = 8
+METRICS_FP_NDX = 9
+METRICS_SIZE = 10
 
 
-class LunaTrainingApp:
+class SegmentationTrainingApp:
     def __init__(self, sys_argv=None):
         if sys_argv is None:
             sys_argv = sys.argv[1:]  # get arguments from command line if not provided
@@ -37,6 +43,17 @@ class LunaTrainingApp:
         parser = argparse.ArgumentParser()
         parser.add_argument('--num-workers', help='Number of processes to use for data loading', default=8, type=int)
         parser.add_argument('--batch-size', help='Batch Size', default=32, type=int)
+        parser.add_argument('--augmented', help='Augment the training data', action='store_true', default=False)
+        parser.add_argument('--augment-flip', help='Augment the training data by flipping', action='store_true',
+                            default=False)
+        parser.add_argument('--augmented-offset', help='Augment the training data by adding offset',
+                            action='store_true', default=False)
+        parser.add_argument('--augmented-scale', help='Augment the training data by adding scale', action='store_true',
+                            default=False)
+        parser.add_argument('--augmented-rotate', help='Augment the training data by adding rotation',
+                            action='store_true', default=False)
+        parser.add_argument('--augmented-noise', help='Augment the training data by adding noise', action='store_true',
+                            default=False)
         parser.add_argument('--epochs', help='Number of training epochs', default=1, type=int)
         parser.add_argument('--tb-prefix', help='Tensorboard prefix', default='luna')
         parser.add_argument('comment', help="Comment suffix for Tensorboard run.", nargs='?', default='dwlpt')
@@ -47,53 +64,55 @@ class LunaTrainingApp:
         self.use_cuda = torch.cuda.is_available()
         self.device = torch.device('cuda' if self.use_cuda else 'cpu')
 
-        self.model = self.initModel()
-        self.optimizer = self.initOptimizer()
         self.totalTrainingSamples_count = 0
 
         self.trn_writer = None
         self.val_writer = None
-        
-    def main(self):
-        log.info("Starting {}, {}".format(type(self).__name__, self.cli_args))
 
-        train_dl = self.initTrainDl()
-        val_dl = self.initValDl()
+        self.augmentation_dict = {}
+        if self.cli_args.augmented or self.cli_args.augment_flip:
+            self.augmentation_dict['flip'] = True
+        if self.cli_args.augmented or self.cli_args.augment_offset:
+            self.augmentation_dict['offset'] = 0.03
+        if self.cli_args.augmented or self.cli_args.augment_scale:
+            self.augmentation_dict['scale'] = 0.2
+        if self.cli_args.augmented or self.cli_args.augment_rotate:
+            self.augmentation_dict['rotate'] = True
+        if self.cli_args.augmented or self.cli_args.augment_noise:
+            self.augmentation_dict['noise'] = 25.0
 
-        for epoch_idx in range(1, self.cli_args.epochs + 1):
-            print('Epoch {}/{}, {}/{} batches of size {}*{}'.format(epoch_idx, self.cli_args.epochs, len(train_dl),
-                                                                       len(val_dl), self.cli_args.batch_size, (
-                                                                           torch.cuda.device_count() if self.use_cuda else 1)))
-            log.info('Epoch {}/{}, {}/{} batches of size {}*{}'.format(epoch_idx, self.cli_args.epochs, len(train_dl),
-                                                                       len(val_dl), self.cli_args.batch_size, (
-                                                                           torch.cuda.device_count() if self.use_cuda else 1)))
-
-            trnMetrics_t = self.doTraining(epoch_idx, train_dl)
-            self.logMetrics(epoch_idx, 'trn', trnMetrics_t)
-
-            valMetrics_t = self.doValidation(epoch_idx, val_dl)
-            self.logMetrics(epoch_idx, 'val', trnMetrics_t)
-
-        if hasattr(self, 'trn_writer'):
-            self.trn_writer.close()
-            self.val_writer.close()
+        self.segmentation_model, self.augmentation_model = self.initModel()
+        self.optimizer = self.initOptimizer()
 
     def initModel(self):
-        model = LunaModel()
+        segmentation_model = UNetWrapper(
+            in_channels=7,
+            n_classes=1,
+            depth=3,
+            wf=4,
+            padding=True,
+            batch_norm=True,
+            up_mode='upconv'
+        )
+        augmentation_model = SegmentationAugmentation(**self.augmentation_dict)
+
         if self.use_cuda:
-            log.info('Using CUDA; {} devices'.format(torch.cuda.device_count()))
+            log.info("Using CUDA; {} devices".format(torch.cuda.device_count()))
             if torch.cuda.device_count() > 1:
-                model = nn.DataParallel(model)
-            model = model.to(self.device)
-        return model
+                segmentation_model = nn.DataParallel(segmentation_model)
+                augmentation_model = nn.DataParallel(augmentation_model)
+            segmentation_model = segmentation_model.to(self.device)
+            augmentation_model = augmentation_model.to(self.device)
+        return segmentation_model, augmentation_model
 
     def initOptimizer(self):
-        return SGD(self.model.parameters(), lr=0.001, momentum=0.99)
+        return Adam(self.segmentation_model.parameters())
 
     def initTrainDl(self):
-        train_ds = LunaDataset(
+        train_ds = TrainingLuna2dSegmentationDataset(
             val_stride=10,
-            isValSet_bool=False
+            isValSet_bool=False,
+            contextSlices_count=3
         )
         batch_size = self.cli_args.batch_size
         if self.use_cuda:
@@ -108,9 +127,10 @@ class LunaTrainingApp:
         return train_dl
 
     def initValDl(self):
-        val_ds = LunaDataset(
+        val_ds = TrainingLuna2dSegmentationDataset(
             val_stride=10,
-            isValSet_bool=True
+            isValSet_bool=True,
+            contextSlices_count=3
         )
         batch_size = self.cli_args.batch_size
         if self.use_cuda:
@@ -131,9 +151,33 @@ class LunaTrainingApp:
             self.trn_writer = SummaryWriter(log_dir=log_dir + '-trn_cls-' + self.cli_args.comment)
             self.val_writer = SummaryWriter(log_dir=log_dir + '-val_cls-' + self.cli_args.comment)
 
+    def main(self):
+        log.info("Starting {}, {}".format(type(self).__name__, self.cli_args))
+
+        train_dl = self.initTrainDl()
+        val_dl = self.initValDl()
+
+        for epoch_idx in range(1, self.cli_args.epochs + 1):
+            print('Epoch {}/{}, {}/{} batches of size {}*{}'.format(epoch_idx, self.cli_args.epochs, len(train_dl),
+                                                                    len(val_dl), self.cli_args.batch_size, (
+                                                                        torch.cuda.device_count() if self.use_cuda else 1)))
+            log.info('Epoch {}/{}, {}/{} batches of size {}*{}'.format(epoch_idx, self.cli_args.epochs, len(train_dl),
+                                                                       len(val_dl), self.cli_args.batch_size, (
+                                                                           torch.cuda.device_count() if self.use_cuda else 1)))
+
+            trnMetrics_t = self.doTraining(epoch_idx, train_dl)
+            self.logMetrics(epoch_idx, 'trn', trnMetrics_t)
+
+            valMetrics_t = self.doValidation(epoch_idx, val_dl)
+            self.logMetrics(epoch_idx, 'val', trnMetrics_t)
+
+        if hasattr(self, 'trn_writer'):
+            self.trn_writer.close()
+            self.val_writer.close()
+
     def doTraining(self, epoch_idx, train_dl):
-        self.model.train()
-        trnMetrics_g = torch.zeros(METRICS_SIZE, len(train_dl.dataset), device=self.device)
+        self.segmentation_model.train()
+        train_dl.dataset.shuffleSamples()
 
         batch_iter = enumerateWithEstimate(
             train_dl,
@@ -158,12 +202,7 @@ class LunaTrainingApp:
 
     def doValidation(self, epoch_idx, val_dl):
         with torch.no_grad():
-            self.model.eval()
-            valMetrics_g = torch.zeros(
-                METRICS_SIZE,
-                len(val_dl.dataset),
-                device=self.device,
-            )
+            self.segmentation_model.eval()
 
             batch_iter = enumerateWithEstimate(
                 val_dl,
@@ -182,159 +221,183 @@ class LunaTrainingApp:
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
 
-        logits_g, probability_g = self.model(input_g)
+        if self.segmentation_model.training and self.augmentation_dict:
+            input_g, label_g = self.augmentation_model(input_g, label_g)
 
-        loss_func = nn.CrossEntropyLoss(reduction='none')
-        loss_g = loss_func(
-            logits_g,
-            label_g[:,1],
-        )
+        prediction_g = self.segmentation_model(input_g)
+
+        diceLoss_g = self.diceLoss(prediction_g, label_g)
+        fnLoss_g = self.diceLoss(prediction_g * label_g, label_g)
+
         start_ndx = batch_ndx * batch_size
-        end_ndx = start_ndx + label_t.size(0)
+        end_dx = start_ndx + input_t.size(0)
 
-        metrics_g[METRICS_LABEL_NDX, start_ndx:end_ndx] = \
-            label_g[:,1].detach()
-        metrics_g[METRICS_PRED_NDX, start_ndx:end_ndx] = \
-            probability_g[:,1].detach()
-        metrics_g[METRICS_LOSS_NDX, start_ndx:end_ndx] = \
-            loss_g.detach()
+        with torch.no_grad():
+            predictionBool_g = (prediction_g[:, 0:1] > classificationThreshold).to(torch.float32)
+            tp = (predictionBool_g * label_g).sum(dim=[1, 2, 3])
+            fn = ((1 - predictionBool_g) * label_g).sum(dim=[1, 2, 3])
+            tp = (predictionBool_g * (~label_g)).sum(dim=[1, 2, 3])
 
-        return loss_g.mean()
+            metrics_g[METRICS_LOSS_NDX, start_ndx:end_dx] = diceLoss_g
+            metrics_g[METRICS_TP_NDX, start_ndx:end_dx] = tp
+            metrics_g[METRICS_FN_NDX, start_ndx:end_dx] = fn
+            metrics_g[METRICS_FP_NDX, start_ndx:end_dx] = fp
 
+        return diceLoss_g.mean() + fnLoss_g.mean() * 8
 
-    def logMetrics(
-            self,
-            epoch_ndx,
-            mode_str,
-            metrics_t,
-            classificationThreshold=0.5,
-    ):
-        self.initTensorboardWriters()
-        log.info("E{} {}".format(
-            epoch_ndx,
-            type(self).__name__,
-        ))
+    def diceLoss(self, prediction_g, label_g, epsilon=1):
+        diceLabel_g = label_g.sum(dim=[1, 2, 3])
+        dicePrediction_g = prediction_g.sum(dim=[1, 2, 3])
+        diceCorrect_g = (prediction_g * label_g).sum(dim=[1, 2, 3])
 
-        negLabel_mask = metrics_t[METRICS_LABEL_NDX] <= classificationThreshold
-        negPred_mask = metrics_t[METRICS_PRED_NDX] <= classificationThreshold
+        diceRatio_g = (2 * diceCorrect_g + epsilon) / (dicePrediction_g + diceLabel_g + epsilon)
 
-        posLabel_mask = ~negLabel_mask
-        posPred_mask = ~negPred_mask
+        return 1 - diceRatio_g
 
-        neg_count = int(negLabel_mask.sum())
-        pos_count = int(posLabel_mask.sum())
+    def logImages(self, epoch_ndx, mode_str, dl):
+        self.segmentation_model.eval()
 
-        neg_correct = int((negLabel_mask & negPred_mask).sum())
-        pos_correct = int((posLabel_mask & posPred_mask).sum())
+        images = sorted(dl.dataset.series_list)[:12]
+        for series_ndx, series_uid in enumerate(images):
+            ct = getCt(series_uid)
+
+            for slice_ndx in range(6):
+                ct_ndx = slice_ndx * (ct.hu_a.shape[0] - 1) // 5
+                sample_tup = dl.dataset.getitem_fullSlice(series_uid, ct_ndx)
+
+                ct_t, label_t, series_uid, ct_ndx = sample_tup
+
+                input_g = ct_t.to(self.device).unsqueeze(0)
+                label_g = pos_g = label_t.to(self.device).unsqueeze(0)
+
+                prediction_g = self.segmentation_model(input_g)[0]
+                prediction_a = prediction_g.to('cpu').detach().numpy()[0] > 0.5
+                label_a = label_g.cpu().numpy[0][0] > 0.5
+
+                ct_t[:-1, :, :] /= 2000
+                ct_t[:-1, :, :] += 0.5
+
+                ctSlice_a = ct[dl.dataset.contextSlices_count].numpy()
+
+                image_a = np.zeros((512, 512, 3), dtype=np.float32)
+                image_a[:, :, :] = ctSlice_a.reshape((512, 512, 1))
+                image_a[:, :, 0] += prediction_a & (1 - label_a)
+                image_a[:, :, 0] += (1 - prediction_a) & label_a
+                image_a[:, :, 1] += ((1 - prediction_a) & label_a) * 0.5
+                image_a[:, :, 1] += prediction_a & label_a
+                image_a *= 0.5
+
+                image_a.clip(0, 1, image_a)
+
+                writer = getattr(self, mode_str + '_writer')
+                writer.add_image(
+                    f'{mode_str}/{series_ndx}_prediction_{slice_ndx}',
+                    image_a,
+                    self.totalTrainingSamples_count,
+                    dataformat='HWC'
+                )
+
+                if epoch_ndx == 1:
+                    image_a = np.zeros((512, 512, 3), dtype=np.float32)
+                    image_a[:, :, :] = ctSlice_a.reshape((512, 512, 1))
+                    image_a[:, :, 1] += label_a
+
+                    image_a *= 0.5
+                    image_a[image_a < 0] = 0
+                    image_a[image_a > 1] = 1
+
+                    writer.add_image(
+                        f'{mode_str}/{series_ndx}_prediction_{slice_ndx}',
+                        image_a,
+                        self.totalTrainingSamples_count,
+                        dataformat='HWC'
+                    )
+            writer.flush()
+
+    def logMetrics(self, epoch_ndx, mode_str, metrics_t):
+        log.info('E{} {}'.format(epoch_ndx, type(self).__name__))
+        metrics_a = metrics_t.detach().numpy()
+        sum_a = metrics_a.sum(axis=1)
+
+        assert np.isinfinite(metrics_a).all()
+
+        allLabel_count = sum_a[METRICS_TP_NDX] + sum_a[METRICS_FN_NDX]
 
         metrics_dict = {}
-        metrics_dict['loss/all'] = \
-            metrics_t[METRICS_LOSS_NDX].mean()
-        metrics_dict['loss/neg'] = \
-            metrics_t[METRICS_LOSS_NDX, negLabel_mask].mean()
-        metrics_dict['loss/pos'] = \
-            metrics_t[METRICS_LOSS_NDX, posLabel_mask].mean()
+        metrics_dict['loss/all'] = metrics_a[METRICS_LOSS_NDX].mean()
+        metrics_dict['percent_all/tp'] = metrics_a[METRICS_TP_NDX] / (allLabel_count or 1) * 100
+        metrics_dict['percent_all/fn'] = metrics_a[METRICS_FN_NDX] / (allLabel_count or 1) * 100
+        metrics_dict['percent_all/fp'] = metrics_a[METRICS_FP_NDX] / (allLabel_count or 1) * 100
 
-        metrics_dict['correct/all'] = (pos_correct + neg_correct) \
-                                      / np.float32(metrics_t.shape[1]) * 100
-        metrics_dict['correct/neg'] = neg_correct / np.float32(neg_count) * 100
-        metrics_dict['correct/pos'] = pos_correct / np.float32(pos_count) * 100
+        precision = metrics_dict['pr/precision'] = sum_a[METRICS_TP_NDX] / (
+                (sum_a[METRICS_TP_NDX] + sum_a[METRICS_FP_NDX]) or 1)
+        precision = metrics_dict['pr/recall'] = sum_a[METRICS_TP_NDX] / (
+                (sum_a[METRICS_TP_NDX] + sum_a[METRICS_FN_NDX]) or 1)
 
-        log.info(
-            ("E{} {:8} {loss/all:.4f} loss, "
-             + "{correct/all:-5.1f}% correct, "
-             ).format(
-                epoch_ndx,
-                mode_str,
-                **metrics_dict,
-            )
-        )
-        log.info(
-            ("E{} {:8} {loss/neg:.4f} loss, "
-             + "{correct/neg:-5.1f}% correct ({neg_correct:} of {neg_count:})"
-             ).format(
-                epoch_ndx,
-                mode_str + '_neg',
-                neg_correct=neg_correct,
-                neg_count=neg_count,
-                **metrics_dict,
-                )
-        )
-        log.info(
-            ("E{} {:8} {loss/pos:.4f} loss, "
-             + "{correct/pos:-5.1f}% correct ({pos_correct:} of {pos_count:})"
-             ).format(
-                epoch_ndx,
-                mode_str + '_pos',
-                pos_correct=pos_correct,
-                pos_count=pos_count,
-                **metrics_dict,
-                )
-        )
+        metrics_dict['pr/f1_score'] = 2 * (precision * recall) / ((precision + recall) or 1)
 
+        log.info((
+            'E{} {:8} {loss/all:.4f} loss, {percent_all/tp:-5.1f}% tp, {percent_all/fn:-5.1f}% fn, {percent_all/fp:-5.1f}% fp ').format(
+            epoch_ndx, mode_str + '_all', **metrics_dict))
+
+        self.initTensorboardWriters()
         writer = getattr(self, mode_str + '_writer')
 
-        for key, value in metrics_dict.items():
-            writer.add_scalar(key, value, self.totalTrainingSamples_count)
+        prefix_str = 'seg_'
 
-        writer.add_pr_curve(
-            'pr',
-            metrics_t[METRICS_LABEL_NDX],
-            metrics_t[METRICS_PRED_NDX],
-            self.totalTrainingSamples_count,
+        for key, value in metrics_dict.items():
+            writer.add_scalar(prefix_str + key, value, self.totalTrainingSamples_count)
+
+        writer.flush()
+        score = metrics_dict['pr/recall']
+
+        return score
+
+    def saveModeL(self, type_str, epoch_ndx, isBest=False):
+        file_path = os.path.join(
+            'data-unversioned',
+            'part2',
+            'models',
+            self.cli_args.tb_prefix,
+            '{}_{}_{}.{}.state'.format(
+                type_str,
+                self.time_str,
+                self.cli_args,
+                self.totalTrainingSamples_count,
+            )
         )
 
-        bins = [x/50.0 for x in range(51)]
+        os.makedirs(os.path.dirname(file_path), mode=0o755, exist_ok=True)
 
-        negHist_mask = negLabel_mask & (metrics_t[METRICS_PRED_NDX] > 0.01)
-        posHist_mask = posLabel_mask & (metrics_t[METRICS_PRED_NDX] < 0.99)
+        model = self.segmentation_model
+        if isinstance(model, torch.nn.DataParallel):
+            model = model.module
 
-        if negHist_mask.any():
-            writer.add_histogram(
-                'is_neg',
-                metrics_t[METRICS_PRED_NDX, negHist_mask],
-                self.totalTrainingSamples_count,
-                bins=bins,
+        state = {
+            'sys_argv': sys.argv,
+            'time': str(datetime.datetime.now()),
+            'model_state': model.state_dict(),
+            'model_name': type(model).__name__,
+            'optimizer_state': self.optimizer.state_dict(),
+            'optimizer_name': type(self.optimizer).__name__,
+            'epoch': epoch_ndx,
+            'totalTrainingSamples_count': self.totalTrainingSamples_count,
+        }
+        torch.save(state, file_path)
+        log.info('Saved model params to {}'.format(file_path))
+
+        if isBest:
+            best_path = os.path.join(
+                'data-unversioned', 'part2', 'models',
+                self.cli_args.tb_prefix,
+                f'{type_str}_{self.time_str}_{self.cli_args.comment}.best.state'
             )
-        if posHist_mask.any():
-            writer.add_histogram(
-                'is_pos',
-                metrics_t[METRICS_PRED_NDX, posHist_mask],
-                self.totalTrainingSamples_count,
-                bins=bins,
-            )
+            shutil.copyfile(file_path, best_path)
+            log.info('Saved model params to {}'.format(best_path))
 
-        # score = 1 \
-        #     + metrics_dict['pr/f1_score'] \
-        #     - metrics_dict['loss/mal'] * 0.01 \
-        #     - metrics_dict['loss/all'] * 0.0001
-        #
-        # return score
+        with open(file_path, 'rb') as f:
+            log.info('SHA1: ' + hashlib.sha1(f.read()).hexdigest())
 
-    # def logModelMetrics(self, model):
-    #     writer = getattr(self, 'trn_writer')
-    #
-    #     model = getattr(model, 'module', model)
-    #
-    #     for name, param in model.named_parameters():
-    #         if param.requires_grad:
-    #             min_data = float(param.data.min())
-    #             max_data = float(param.data.max())
-    #             max_extent = max(abs(min_data), abs(max_data))
-    #
-    #             # bins = [x/50*max_extent for x in range(-50, 51)]
-    #
-    #             try:
-    #                 writer.add_histogram(
-    #                     name.rsplit('.', 1)[-1] + '/' + name,
-    #                     param.data.cpu().numpy(),
-    #                     # metrics_a[METRICS_PRED_NDX, negHist_mask],
-    #                     self.totalTrainingSamples_count,
-    #                     # bins=bins,
-    #                 )
-    #             except Exception as e:
-    #                 log.error([min_data, max_data])
-    #                 raise
 
 if __name__ == '__main__':
-    LunaTrainingApp.main()
+    SegmentationTrainingApp().main()

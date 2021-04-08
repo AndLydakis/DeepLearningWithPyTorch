@@ -3,7 +3,7 @@ import math
 from torch import nn as nn
 
 from luna_util.logconf import logging
-from luna_util.unet import Unet
+from luna_util.unet import UNet
 
 log = logging.getLogger(__name__)
 # log.setLevel(logging.WARN)
@@ -16,7 +16,7 @@ class UNetWrapper(nn.Module):
         super().__init__()
 
         self.input_batchnorm = nn.BatchNorm2d(kwargs['in_channels'])
-        self.unet = Unet(**kwargs)
+        self.unet = UNet(**kwargs)
         self.final = nn.Sigmoid()
         self._init_weights()
 
